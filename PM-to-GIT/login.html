@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Secure PM Login</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="login-container">
+  <h2>Private Messenger</h2>
+  <input type="text" id="username" placeholder="Enter username" />
+  <button id="loginBtn">Login / Register</button>
+  <p id="status"></p>
+</div>
+
+<script>
+document.getElementById("loginBtn").onclick = async () => {
+  const username = document.getElementById("username").value.trim();
+  if (!username) return alert("Enter a username");
+
+  const res = await fetch("/api/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username }),
+  });
+
+  const data = await res.json();
+  if (data.error) return alert(data.error);
+
+  localStorage.setItem("username", data.username);
+  localStorage.setItem("id", data.id);
+  localStorage.setItem("pmId", data.pmId);
+
+  window.location.href = `/pm.html?id=${data.pmId}`;
+};
+</script>
+</body>
+</html>

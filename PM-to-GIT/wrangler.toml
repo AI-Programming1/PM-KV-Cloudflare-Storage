@@ -1,0 +1,10 @@
+name = "pm-worker"
+main = "index.js"
+compatibility_date = "2025-10-16"
+routes = [
+  { pattern = "sub.domain.com/*", zone_name = "domain.com" }
+]
+
+[[kv_namespaces]]
+binding = "USER_KV"
+id = "xxxxxxxxxxxxxxxxxxxxxxxxxxx"

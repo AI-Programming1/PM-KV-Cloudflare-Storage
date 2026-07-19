@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Private Messaging Dashboard</title>
+<style>
+body { background:#0a1a2f; color:#fff; font-family:Arial,sans-serif; margin:0; padding:0; }
+.container { max-width:800px; margin:30px auto; background:#122b47; border-radius:12px; box-shadow:0 0 15px rgba(0,0,0,0.4); padding:20px; }
+input,textarea,button { width:100%; padding:10px; margin:6px 0; border-radius:8px; border:none; font-size:15px; }
+button { background:#1e90ff; color:#fff; cursor:pointer; } button:hover { background:#3aa0ff; }
+.tabs { display:flex; gap:8px; margin-bottom:15px; }
+.tab { display:none; } .tab.active { display:block; }
+.hidden { display:none; }
+a { color:#00b7ff; word-break:break-all; }
+#msg { color:lightgreen; }
+#red { color: red;  }
+
+.msg-banner {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 10px 18px;
+  border-radius: 8px;
+  color: #fff;
+  font-weight: 600;
+  font-family: sans-serif;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+  z-index: 9999;
+  transition: opacity 0.3s ease, transform 0.3s ease;
+}
+.banner-success { background-color: #28a745; }
+.banner-error { background-color: #dc3545; }
+.msg-banner.hide {
+  opacity: 0;
+  transform: translate(-50%, 10px);
+}
+</style>
+</head>
+<body>
+<div class="container">
+  <h2>Private Messenger Dashboard</h2>
+  <div id="main">
+    <input type="text" id="usernameInput" placeholder="Enter Username" />
+    <input type="password" id="adminPassInput" placeholder="Admin Password (for creation)" /> 
+    <button id="createBtn">Create Account</button>
+    <button id="loginBtn">Login</button>
+    <p id="msg"></p>
+    <p>Admin pass no longer needed for account creation. Pick an available username, create an account, and start messaging directly with other users!</p>
+  </div>
+
+  <div id="dash" class="hidden">
+    <h3>Welcome, <span id="u_disp"></span></h3>
+    <input type="text" id="userIDInput" readonly />
+    <div class="tabs">
+      <button onclick="showTab('messages')">Messages</button>
+      <button onclick="showTab('settings')">Settings</button>
+      <button onclick="showTab('pm')">PM Page</button>
+    </div>
+
+    <div id="messages" class="tab active">
+      <h3>Send Private Message</h3>
+      <input id="toUser" placeholder="Recipient Username">
+      <input id="subject" placeholder="Subject">
+      <textarea id="messageBox" placeholder="Write your message..."></textarea>
+      <!-- NEW: attachment input -->
+      <input type="file" id="attachFileDash" accept="image/*,video/*">
+      <button onclick="sendMessage()">Send Message</button>
+    </div>
+
+    <div id="settings" class="tab">
+      <h3>Settings</h3>
+      <button onclick="regeneratePmId()">Regenerate PM Link</button>
+      <button onclick="deleteAllMessages()">Delete All Messages</button>
+      <button onclick="deleteAccount()">Delete Account</button>
+      <button onclick="logout()">Logout</button>
+    </div>
+
+    <div id="pm" class="tab">
+      <h3>Your Private Message Page</h3>
+      <p id='red'>Do not share this link. This is your personal Inbox to receive/view direct messages:</p>
+      <p id='red'>Reccomended use: Personal computers you own. If you must visit the page url on a public computer you can use the "Regenerate PM Link" in the settings to issue you a new inbox location url.</p>
+      <p id='red'>Remember: STORE YOUR PASSWORD IN A SAFE PLACE.</p>
+      <a id="pmLink" target="_blank"></a>
+    </div>
+  </div>
+</div>
+
+<script>
+const WORKER_URL = "https://pm-worker.clip-devious-turf.workers.dev";
+const usernameInput = document.getElementById("usernameInput");
+const adminPassInput = document.getElementById("adminPassInput");
+const createBtn = document.getElementById("createBtn");
+const loginBtn = document.getElementById("loginBtn");
+const dash = document.getElementById("dash");
+const main = document.getElementById("main");
+const pmLink = document.getElementById("pmLink");
+const msg = document.getElementById("msg");
+const userIDInput = document.getElementById("userIDInput");
+const u_disp = document.getElementById("u_disp");
+
+let currentUser = null;
+
+function showTab(tabName){ document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active')); document.getElementById(tabName).classList.add('active'); }
+function show(el){ el.classList.remove("hidden"); }
+function hide(el){ el.classList.add("hidden"); }
+function showMessage(text,err=false){ msg.style.color=err?"tomato":"lightgreen"; msg.textContent=text; }
+
+async function api(path,opt={}){ const res=await fetch(WORKER_URL+path,opt); return res.json(); }
+
+// --- Create Account ---
+createBtn.onclick=async()=>{
+  const username=usernameInput.value.trim().toLowerCase();
+  const adminPass=adminPassInput.value;
+  if(!username) return showMessage("Enter username",true);
+  try{
+    const resp=await api("/createAccount",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username,adminPass})});
+    if(!resp.ok) return showMessage(resp.error||"Failed",true);
+    currentUser={username:resp.username,id:resp.id,pmId:resp.pmId};
+    localStorage.setItem("username",currentUser.username);
+    localStorage.setItem("id",currentUser.id);
+    localStorage.setItem("pmId",currentUser.pmId);
+    u_disp.textContent=currentUser.username;
+    userIDInput.value=currentUser.id;
+    hide(main); show(dash);
+    showMessage("Account created — save your ID/password!");
+    pmLink.href=window.location.origin+"/PM/PM.html?id="+encodeURIComponent(currentUser.pmId);
+    pmLink.textContent=pmLink.href;
+  }catch(err){ showMessage(err.message,true); }
+};
+
+// --- Login ---
+loginBtn.onclick=async()=>{
+  const username=usernameInput.value.trim().toLowerCase();
+  const id=prompt("Enter your ID (password):");
+  if(!username||!id) return showMessage("Missing login fields",true);
+  try{
+    const resp=await api("/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username,id})});
+    if(!resp.ok) return showMessage(resp.error||"Login failed",true);
+    currentUser={username:resp.username,id:resp.id,pmId:resp.pmId};
+    localStorage.setItem("username",currentUser.username);
+    localStorage.setItem("id",currentUser.id);
+    localStorage.setItem("pmId",currentUser.pmId);
+    if (resp.sessionToken) localStorage.setItem("sessionToken", resp.sessionToken);
+    u_disp.textContent=currentUser.username;
+    userIDInput.value=currentUser.id;
+    hide(main); show(dash);
+    showMessage("Logged in successfully!");
+    pmLink.href=window.location.origin+"/PM/PM.html?id="+encodeURIComponent(currentUser.pmId);
+    pmLink.textContent=pmLink.href;
+  }catch(err){ showMessage(err.message,true); }
+};
+
+// --- Send Message (with optional attachment) ---
+async function sendMessage(){
+  const sessionToken = localStorage.getItem("sessionToken");
+  const toUser=document.getElementById("toUser").value.trim();
+  const subject=document.getElementById("subject").value.trim();
+  const msgBody=document.getElementById("messageBox").value.trim();
+  const fileInput=document.getElementById("attachFileDash");
+  if(!sessionToken) return showBanner("You must be logged in.","error");
+  if(!toUser||!msgBody) return showBanner("Please fill out username and message.","error");
+
+  let mediaUrl = null;
+  let mediaType = null;
+
+  if (fileInput && fileInput.files && fileInput.files[0]) {
+    const file = fileInput.files[0];
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("sessionToken", sessionToken);
+
+    try {
+      const uploadRes = await fetch(`${WORKER_URL}/uploadMedia`, {
+        method: "POST",
+        body: formData
+      });
+      const uploadData = await uploadRes.json();
+      if (!uploadData.ok) {
+        return showBanner("Media upload failed: " + (uploadData.error || "Unknown error"), "error");
+      }
+      mediaUrl = uploadData.url;
+      mediaType = uploadData.mediaType || file.type || "";
+    } catch (err) {
+      console.error("Media upload error:", err);
+      return showBanner("Media upload error: " + err.message, "error");
+    }
+  }
+
+  const res=await fetch(`${WORKER_URL}/sendPM`,{
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({sessionToken,toUsername:toUser,subject,body:msgBody,mediaUrl,mediaType})
+  });
+  const data=await res.json();
+  if(!data.ok) return showBanner("Failed to send message.","error");
+  document.getElementById("subject").value="";
+  document.getElementById("messageBox").value="";
+  if (fileInput) fileInput.value = "";
+  showBanner("Message sent!","success");
+}
+
+// --- Regenerate PM Link ---
+async function regeneratePmId(){
+  if(!confirm("Regenerate PM link? Old link will stop working.")) return;
+  const username=localStorage.getItem("username");
+  const sessionToken=localStorage.getItem("sessionToken");
+  const resp=await api("/regeneratePmId",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username,sessionToken})});
+  if(resp.ok){
+    localStorage.setItem("pmId",resp.newPmId);
+    pmLink.href=window.location.origin+"/PM/PM.html?id="+encodeURIComponent(resp.newPmId);
+    pmLink.textContent=pmLink.href;
+    showBanner("New PM link generated!","success");
+  }else showBanner(resp.error||"Failed to regenerate.","error");
+}
+
+// --- Delete All Messages ---
+async function deleteAllMessages(){
+  const sessionToken=localStorage.getItem("sessionToken");
+  const pmId=localStorage.getItem("pmId");
+  if(!confirm("Delete ALL messages?")) return;
+  const res=await fetch(`${WORKER_URL}/deleteAll`,{
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({sessionToken,pmId})
+  });
+  const data=await res.json();
+  if(data.ok){ showBanner("All messages deleted.","success"); }
+  else showBanner(data.error||"Failed to delete","error");
+}
+
+// --- Delete Account ---
+async function deleteAccount(){
+  const sessionToken=localStorage.getItem("sessionToken");
+  const username=localStorage.getItem("username");
+  if(!confirm("Permanently delete your account?")) return;
+  const res=await fetch(`${WORKER_URL}/deleteAccount`,{
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({sessionToken,username})
+  });
+  const data=await res.json();
+  if(data.ok){
+    showBanner("Account deleted.","success");
+    localStorage.clear();
+    hide(dash); show(main);
+  }
+  else showBanner(data.error||"Failed","error");
+}
+
+// --- Logout ---
+async function logout(){
+  const username = localStorage.getItem('username');
+  const token = localStorage.getItem('sessionToken');
+  try {
+    if (username && token) {
+      await fetch(WORKER_URL + '/logout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, sessionToken: token })
+      }).catch(()=>{});
+    }
+  } catch(e){ /* ignore */ }
+
+  localStorage.clear();
+  currentUser=null;
+  hide(dash); show(main); showMessage("Logged out");
+}
+
+/* Banner helper for dashboard */
+function showBanner(text, type="success"){
+  let old=document.querySelector('.msg-banner');
+  if(old) old.remove();
+  const div=document.createElement('div');
+  div.className='msg-banner '+(type==='error'?'banner-error':'banner-success');
+  div.textContent=text;
+  document.body.appendChild(div);
+  setTimeout(()=>{div.classList.add('hide');setTimeout(()=>div.remove(),300);},2500);
+}
+</script>
+</body>
+</html>

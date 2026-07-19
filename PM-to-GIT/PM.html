@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Private Messages</title>
+<style>
+body{background:#0a1a2f;color:#fff;font-family:Arial,sans-serif;margin:0;padding:0;}
+.container{max-width:800px;margin:30px auto;background:#122b47;border-radius:12px;box-shadow:0 0 15px rgba(0,0,0,0.4);padding:20px;}
+input,textarea,button{width:100%;padding:10px;margin:6px 0;border-radius:8px;border:none;font-size:15px;}
+button{background:#1e90ff;color:#fff;cursor:pointer;}button:hover{background:#3aa0ff;}
+.msg{background:#17395f;padding:10px;border-radius:8px;margin-bottom:10px;}
+small{color:#aaa;}
+
+/* PM confirmation banner */
+.pm-banner {
+  margin-top: 12px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  color: #fff;
+  font-weight: 600;
+  text-align: center;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+  transition: opacity .3s ease, transform .3s ease;
+  opacity: 1;
+}
+.pm-banner-success { background: #28a745; }
+.pm-banner-error { background: #dc3545; }
+.pm-banner-hide { opacity: 0; transform: translateY(-6px); }
+
+.tabs { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px; justify-content:center; }
+.tab { background:#2d72d9; border:none; color:white; padding:6px 12px; border-radius:6px; cursor:pointer; font-family:sans-serif; font-size:14px; transition:background .2s; }
+.tab:hover{background:#1b4fa8} .tab.active{background:#15803d;}
+.badge{font-size:12px;margin-left:3px;vertical-align:middle;}
+</style>
+</head>
+<body>
+<div class="container">
+  <h2>Private Message Page</h2>
+  <p id="info"></p>
+  <h3>Send a Reply</h3>
+  <input type="text" id="toUser" placeholder="Recipient Username">
+  <input type="text" id="subject" placeholder="Subject">
+  <textarea id="messageBox" placeholder="Write your message..."></textarea>
+  <!-- NEW: attachment input -->
+  <input type="file" id="attachFile" accept="image/*,video/*">
+  <button id="sendBtn">Send Message</button>
+
+  <h3>Your Inbox (auto-refreshes)</h3>
+  <div id="conversationTabs" class="tabs"></div>
+  <div id="inbox"></div>
+  <button id="refreshBtn">Refresh</button>
+  <button id="deleteAllBtn">Delete All</button>
+</div>
+
+<script>
+const WORKER_URL="https://pm-worker.clip-devious-turf.workers.dev";
+const pmId=new URLSearchParams(window.location.search).get("id");
+const info=document.getElementById("info");
+const inbox=document.getElementById("inbox");
+const refreshBtn=document.getElementById("refreshBtn");
+const deleteAllBtn=document.getElementById("deleteAllBtn");
+const sendBtn=document.getElementById("sendBtn");
+
+if(!pmId){ info.textContent="Error: Missing PM ID."; } 
+else { info.textContent="Your PM Page ID: "+pmId; }
+
+let inboxRevoked = false;
+
+// Require login
+function ensureLoggedIn() {
+  const username = localStorage.getItem("username");
+  const userId = localStorage.getItem("id");
+  const token = localStorage.getItem("sessionToken");
+  if (!username || !userId || !token) {
+    document.body.innerHTML = `
+      <div style="text-align:center;margin-top:60px;font-family:sans-serif;">
+        <h2>🔒 Please log in to access private messages.</h2>
+        <p>Your session has ended or you are not signed in.</p>
+        <button onclick="window.location.href='/index.html'">Go to Login</button>
+      </div>`;
+    return false;
+  }
+  return true;
+}
+
+if (!ensureLoggedIn()) { throw new Error("User not logged in — messaging disabled"); }
+
+/* Tabs UI */
+let currentConversation = null;
+let seenMessages = {};
+
+function renderConversationTabs(messages) {
+  const tabsContainer = document.getElementById("conversationTabs");
+  if (!tabsContainer) return;
+  const senders = [...new Set(messages.map(m => m.senderUsername))];
+  tabsContainer.innerHTML = "";
+
+  const allTab = document.createElement("button");
+  allTab.textContent = "All";
+  allTab.className = "tab active";
+  allTab.onclick = () => {
+    currentConversation = null;
+    document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+    allTab.classList.add("active");
+    document.getElementById("toUser").value = "";
+    showMessages(messages);
+  };
+  tabsContainer.appendChild(allTab);
+
+  senders.forEach(sender => {
+    const btn = document.createElement("button");
+    btn.className = "tab";
+    const userMessages = messages.filter(m => m.senderUsername === sender);
+    const lastSeen = seenMessages[sender] || 0;
+    const latestMsg = Math.max(...userMessages.map(m => m.ts));
+    const hasUnread = latestMsg > lastSeen;
+    btn.innerHTML = `${sender}${hasUnread ? ' <span class="badge">🔵</span>' : ''}`;
+    btn.onclick = () => {
+      currentConversation = sender;
+      document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+      btn.classList.add("active");
+      document.getElementById("toUser").value = sender;
+      showMessages(userMessages);
+      seenMessages[sender] = Date.now();
+      btn.innerHTML = sender;
+    };
+    tabsContainer.appendChild(btn);
+  });
+}
+
+function showMessages(msgList) {
+  const inbox = document.getElementById("inbox");
+  inbox.innerHTML = "";
+  if (!msgList.length) {
+    inbox.innerHTML = "<p>No messages.</p>";
+    return;
+  }
+  msgList.slice().reverse().forEach((m) => {
+    const div = document.createElement("div");
+    div.className = "msg";
+    div.id = `msg-${m.id}`;
+    div.innerHTML = `
+      <b>From:</b> ${m.senderUsername}<br>
+      <b>Subject:</b> ${m.subject || "(no subject)"}<br>
+      <p>${m.body}</p>
+      <small>${new Date(m.ts).toLocaleString()}</small><br>
+      <button onclick="deleteMessage('${m.id}')">Delete</button>
+    `;
+
+    // NEW: render media if present
+    if (m.mediaUrl) {
+      const mt = m.mediaType || "";
+      if (mt.startsWith("video/")) {
+        const vid = document.createElement("video");
+        vid.src = m.mediaUrl;
+        vid.controls = true;
+        vid.style.maxWidth = "100%";
+        vid.style.marginTop = "8px";
+        div.appendChild(vid);
+      } else {
+        const img = document.createElement("img");
+        img.src = m.mediaUrl;
+        img.style.maxWidth = "100%";
+        img.style.marginTop = "8px";
+        img.style.borderRadius = "6px";
+        div.appendChild(img);
+      }
+    }
+
+    inbox.appendChild(div);
+  });
+}
+
+/* ===== Load messages ===== */
+async function loadMessages() {
+  try {
+    const token = localStorage.getItem("sessionToken") || '';
+    const res = await fetch(`${WORKER_URL}/inbox?id=${encodeURIComponent(pmId)}&token=${encodeURIComponent(token)}`);
+    const data = await res.json();
+
+    if (res.status === 403 && data.error && data.error.toLowerCase().includes("revoked")) {
+      inboxRevoked = true;
+      document.body.innerHTML = `
+        <div style="text-align:center;margin-top:60px;font-family:sans-serif;">
+          <h2>⚠️ This PM link has expired or been revoked.</h2>
+          <p>Please log in to your account to get your new active message link.</p>
+          <button onclick="window.location.href='/index.html'">Go to Dashboard</button>
+        </div>`;
+      return;
+    }
+
+    if (res.status === 403 && data.error && data.error.toLowerCase().includes("not authenticated")) {
+      localStorage.clear();
+      document.body.innerHTML = `
+        <div style="text-align:center;margin-top:60px;font-family:sans-serif;">
+          <h2>🔒 Please log in to access private messages.</h2>
+          <p>Your session is not active. Log in to view this inbox.</p>
+          <button onclick="window.location.href='/index.html'">Go to Login</button>
+        </div>`;
+      return;
+    }
+
+    if (!data.ok || !data.messages || !data.messages.length) {
+      inbox.innerHTML = "<p>No messages.</p>";
+      return;
+    }
+
+    renderConversationTabs(data.messages);
+    showMessages(currentConversation ? data.messages.filter(m => m.senderUsername === currentConversation) : data.messages);
+  } catch (err) {
+    console.error("Error loading inbox:", err);
+  }
+}
+
+let autoRefreshInterval=null;
+function startAutoRefresh(){
+  if(autoRefreshInterval) clearInterval(autoRefreshInterval);
+  autoRefreshInterval=setInterval(loadMessages,10000);
+}
+
+/* ===== Secure Send Message (with optional media) ===== */
+async function sendMessage() {
+  if (inboxRevoked) {
+    showBanner("This PM link is inactive — please log in to get a new one.", "error");
+    return;
+  }
+  const token = localStorage.getItem("sessionToken");
+  if (!token) {
+    showBanner("You must be logged in to send messages.", "error");
+    return;
+  }
+  const toUsername=document.getElementById("toUser").value.trim();
+  const subjectEl=document.getElementById("subject");
+  const msgEl=document.getElementById("messageBox");
+  const fileInput=document.getElementById("attachFile");
+  const subject=subjectEl?subjectEl.value.trim():"";
+  const msgBody=msgEl?msgEl.value.trim():"";
+  if(!toUsername||!msgBody){ showBanner("Please enter a username and message.","error"); return; }
+
+  let mediaUrl = null;
+  let mediaType = null;
+
+  // If a file is selected, upload it first
+  if (fileInput && fileInput.files && fileInput.files[0]) {
+    const file = fileInput.files[0];
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("sessionToken", token);
+
+    try {
+      const uploadRes = await fetch(`${WORKER_URL}/uploadMedia`, {
+        method: "POST",
+        body: formData
+      });
+      const uploadData = await uploadRes.json();
+      if (!uploadData.ok) {
+        showBanner("Media upload failed: " + (uploadData.error || "Unknown error"), "error");
+        return;
+      }
+      mediaUrl = uploadData.url;
+      mediaType = uploadData.mediaType || file.type || "";
+    } catch (err) {
+      console.error("Upload error:", err);
+      showBanner("Media upload error: " + err.message, "error");
+      return;
+    }
+  }
+
+  try {
+    const res = await fetch(`${WORKER_URL}/sendPM`,{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({sessionToken:token,toUsername,subject,body:msgBody,mediaUrl,mediaType})
+    });
+    const data=await res.json();
+    if (!data.ok) { showBanner("Failed: "+(data.error||"Unknown error"),"error"); return; }
+    if(subjectEl)subjectEl.value="";
+    if(msgEl)msgEl.value="";
+    if(fileInput) fileInput.value = "";
+    showBanner("Message sent!","success");
+    loadMessages();
+  } catch(err){ showBanner("Error: "+err.message,"error"); }
+}
+
+/* ===== Delete Single Message (sessionToken version) ===== */
+async function deleteMessage(msgId) {
+  const sessionToken = localStorage.getItem("sessionToken");
+  if (!sessionToken) {
+    alert("You must be logged in to delete messages.");
+    return;
+  }
+  if (!confirm("Delete this message?")) return;
+
+  try {
+    const res = await fetch(`${WORKER_URL}/deleteMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionToken, pmId, msgId })
+    });
+    const data = await res.json();
+    if (data.ok) {
+      const msgEl = document.getElementById(`msg-${msgId}`);
+      if (msgEl) msgEl.remove();
+      showBanner("Message deleted.", "success");
+    } else {
+      showBanner(data.error || "Failed to delete message.", "error");
+    }
+  } catch (err) {
+    console.error("Error deleting:", err);
+    showBanner("Network error.", "error");
+  }
+}
+
+/* ===== Delete All Messages ===== */
+async function deleteAll() {
+  const sessionToken = localStorage.getItem("sessionToken");
+  if (!sessionToken) {
+    showBanner("You must be logged in to delete messages.", "error");
+    return;
+  }
+  if(!confirm("Delete ALL messages?")) return;
+  const res = await fetch(`${WORKER_URL}/deleteAll`,{
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({sessionToken,pmId})
+  });
+  const data = await res.json();
+  if(data.ok){ showBanner("All messages deleted.","success"); loadMessages(); }
+  else showBanner(data.error||"Failed to delete all.","error");
+}
+
+/* ===== Banner Helper ===== */
+function showBanner(text, kind="success") {
+  const existing=document.querySelector(".pm-banner"); if(existing) existing.remove();
+  const banner=document.createElement("div");
+  banner.className="pm-banner "+(kind==="error"?"pm-banner-error":"pm-banner-success");
+  banner.textContent=text;
+  const container=document.querySelector(".container")||document.body;
+  container.appendChild(banner);
+  setTimeout(()=>{banner.classList.add("pm-banner-hide");setTimeout(()=>banner.remove(),300);},3000);
+}
+
+refreshBtn.onclick=loadMessages;
+deleteAllBtn.onclick=deleteAll;
+sendBtn.onclick=sendMessage;
+loadMessages();
+startAutoRefresh();
+</script>
+</body>
+</html>
